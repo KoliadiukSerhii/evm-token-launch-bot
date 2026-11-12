@@ -1,0 +1,21 @@
+services:
+  token-launch-bot:
+    build: .
+    container_name: token-launch-bot
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=384"
+    # on-failure: a crash restarts and resumes from data/state.json; /stop exits 0 and stays down.
+    restart: on-failure
+    mem_limit: 512m
+    volumes:
+      - ./logs:/app/logs
+      # Deployments and block cursors. Losing it makes the bot launch every token again.
+      - ./data:/app/data
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
