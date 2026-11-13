@@ -1,4 +1,5 @@
 import type { ChainKey } from "../chains/types.js";
+import { formatDurationMs } from "../core/format.js";
 import { log } from "../core/logger.js";
 import { SerialQueue } from "../core/serial.js";
 import { scheduleAt, type ScheduledHandle } from "../core/time.js";
@@ -50,12 +51,9 @@ export class DeployScheduler {
   }
 
   async onCoinExited(): Promise<void> {
-    if (!this.enabled) return;
-    await this.queue.applyPostExitCooldown(
-      this.chain,
-      POST_EXIT_DEPLOY_DELAY_MS,
-    );
+    await this.queue.applyPostExitCooldown(this.chain, this.cooldownMs);
     log.info(
+      `[${this.chain}] deploy scheduler: next deploy in ${formatDurationMs(this.cooldownMs)}`,
       `[${this.chain}] deploy scheduler: next deploy in ${POST_EXIT_DEPLOY_DELAY_MS / 60_000} minutes`,
     );
     this.scheduleOrDeploy();
@@ -87,7 +85,7 @@ export class DeployScheduler {
     }
     const nextAt = this.queue.nextDeployAt(this.chain);
     if (nextAt && Date.parse(nextAt) > Date.now()) {
-      const left = Math.ceil((Date.parse(nextAt) - Date.now()) / 60_000);
+      return `Wait ${left}m after the last ${this.chain} exit before deploy (${formatDurationMs(this.cooldownMs)} cooldown)`;
       return `Wait ${left}m after the last ${this.chain} exit before deploy (5m cooldown)`;
     }
     const ok = await this.launch(spec);

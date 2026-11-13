@@ -1,5 +1,6 @@
 import { formatEther } from "viem";
 import { CHAINS } from "../chains/registry.js";
+import { env } from "../config/env.js";
 import type { ChainConfig } from "../chains/types.js";
 import {
   escapeHtml,
@@ -48,16 +49,20 @@ export class Reporter {
 
   launched(deployment: LiveDeployment, poolLifetimeMs: number): void {
     const config = CHAINS[deployment.chain];
-    const lifetime = formatDurationMs(poolLifetimeMs);
     log.info(`[${deployment.chain}] ${deployment.symbol} launched`, deployment);
     this.telegram.send(
       [
-        `🚀 <b>${escapeHtml(deployment.symbol)}</b> launched on ${escapeHtml(config.chain.name)}`,
-        `Pool: ${formatToken(BigInt(deployment.poolNative))} ${config.nativeSymbol} ($${deployment.poolUsd}) + ${formatToken(BigInt(deployment.supply), 0)} ${escapeHtml(deployment.symbol)}`,
-        `Auto shutdown in ${lifetime} unless /canceltimer`,
+        `🚀 <b>${escapeHtml(deployment.symbol)}</b> launched`,
+        `Chain: ${escapeHtml(config.chain.name)}`,
+        `Pool: ${formatToken(BigInt(deployment.poolNative))} ${config.nativeSymbol} ($${deployment.poolUsd})`,
+        `Supply: ${formatToken(BigInt(deployment.supply), 0)} ${escapeHtml(deployment.symbol)}`,
+        `Auto shutdown: ${formatDurationMs(poolLifetimeMs)}`,
+        "Cancel: /canceltimer",
         `Token: ${explorerLink(config, "address", deployment.token, deployment.token)}`,
-        `Pair: ${explorerLink(config, "address", deployment.pair)} · ${chartLink(config, deployment.pair)}`,
-        `Tx: ${explorerLink(config, "tx", deployment.txHash)} · block ${deployment.block}`,
+        `Pair: ${explorerLink(config, "address", deployment.pair, deployment.pair)}`,
+        `Chart: ${chartLink(config, deployment.pair)}`,
+        `Tx: ${explorerLink(config, "tx", deployment.txHash, deployment.txHash)}`,
+        `Block: ${deployment.block}`,
       ].join("\n"),
     );
   }
@@ -75,35 +80,35 @@ export class Reporter {
           : reason === "sell"
             ? "manual sell from 75% closed the pool"
             : "pool lifetime was overdue";
-    log.alert(
+    log.info(
       `[${deployment.chain}] ${deployment.symbol} liquidity withdrawn (${why})`,
       { txHash: deployment.withdrawTxHash },
     );
     const hashes = deployment.exitTxHashes ?? [];
     const txLines =
       hashes.length > 0
-        ? hashes
-            .map((hash, index) => `Tx ${index + 1}: ${explorerLink(config, "tx", hash)}`)
-            .join("\n")
+        ? hashes.map(
+            (hash, index) =>
+              `Tx ${index + 1}: ${explorerLink(config, "tx", hash, hash)}`,
+          )
         : deployment.withdrawTxHash
-          ? `Tx: ${explorerLink(config, "tx", deployment.withdrawTxHash)}`
-          : "";
+          ? [`Tx: ${explorerLink(config, "tx", deployment.withdrawTxHash, deployment.withdrawTxHash)}`]
+          : [];
     this.telegram.send(
       [
-        `🏁 <b>${escapeHtml(deployment.symbol)}</b> pool closed on ${escapeHtml(config.chain.name)}`,
+        `🏁 <b>${escapeHtml(deployment.symbol)}</b> pool closed`,
+        `Chain: ${escapeHtml(config.chain.name)}`,
         `Reason: ${escapeHtml(why)}`,
-        "LP removed, then the token balance was swapped to native where the pool still had liquidity.",
-        txLines,
-        "",
-        `Next ${escapeHtml(config.chain.name)} deploy after the 5m cooldown.`,
-      ]
-        .filter(Boolean)
-        .join("\n"),
+        "LP removed",
+        "Tokens swapped to native where the pool still had liquidity",
+        ...txLines,
+        `Next deploy: ${formatDurationMs(env.deployCooldownMs)} cooldown`,
+      ].join("\n"),
     );
   }
 
   exitCritical(line: string): void {
-    log.alert(line);
+    log.error(line);
     this.telegram.send(`🚨 ${escapeHtml(line)}`);
   }
 
@@ -147,10 +152,14 @@ export class Reporter {
     const icon = event.side === "buy" ? "🟢 BUY" : "🔴 SELL";
     this.telegram.send(
       [
-        `${icon} <b>${escapeHtml(symbol)}</b> · ${escapeHtml(config.chain.name)}`,
-        `${tokens} ${escapeHtml(symbol)} for ${formatToken(event.nativeAmount)} ${config.nativeSymbol} (${formatUsd(event.usd)})`,
-        `Price: ${formatUsd(event.priceUsd)} · MC: ${formatUsd(event.marketCapUsd)}`,
-        `${event.side === "buy" ? "Buyer" : "Seller"}: ${explorerLink(config, "address", event.trader)} · ${explorerLink(config, "tx", event.txHash, "tx")}`,
+        `${icon} <b>${escapeHtml(symbol)}</b>`,
+        `Chain: ${escapeHtml(config.chain.name)}`,
+        `Wallet: ${explorerLink(config, "address", event.trader, event.trader)}`,
+        `Tx: ${explorerLink(config, "tx", event.txHash, event.txHash)}`,
+        `Tokens: ${tokens} ${escapeHtml(symbol)}`,
+        `Native: ${formatToken(event.nativeAmount)} ${config.nativeSymbol} (${formatUsd(event.usd)})`,
+        `Price: ${formatUsd(event.priceUsd)}`,
+        `Market cap: ${formatUsd(event.marketCapUsd)}`,
       ].join("\n"),
     );
   }
@@ -169,9 +178,12 @@ export class Reporter {
     const icon = event.action === "added" ? "💧" : "⚠️";
     this.telegram.send(
       [
-        `${icon} Liquidity ${verb} <b>${escapeHtml(symbol)}</b> · ${escapeHtml(config.chain.name)}`,
-        `${formatToken(event.tokenAmount)} ${escapeHtml(symbol)} + ${formatToken(event.nativeAmount)} ${config.nativeSymbol} (${formatUsd(event.usd)})`,
-        `By: ${explorerLink(config, "address", event.provider)} · ${explorerLink(config, "tx", event.txHash, "tx")}`,
+        `${icon} Liquidity ${verb} <b>${escapeHtml(symbol)}</b>`,
+        `Chain: ${escapeHtml(config.chain.name)}`,
+        `Wallet: ${explorerLink(config, "address", event.provider, event.provider)}`,
+        `Tx: ${explorerLink(config, "tx", event.txHash, event.txHash)}`,
+        `Tokens: ${formatToken(event.tokenAmount)} ${escapeHtml(symbol)}`,
+        `Native: ${formatToken(event.nativeAmount)} ${config.nativeSymbol} (${formatUsd(event.usd)})`,
       ].join("\n"),
     );
   }

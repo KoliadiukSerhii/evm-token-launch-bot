@@ -54,10 +54,12 @@ export class Bot {
       (chain, symbol, delayMs, error, attempt) => {
         this.reporter.exitCritical(
           [
-            `[${chain}] exit attempt #${attempt} failed for ${symbol}`,
-            `Retry in ${Math.round(delayMs / 1000)}s (exponential backoff)`,
-            "5m deploy cooldown is NOT started until the position is closed",
-            error,
+            `[${chain}] exit attempt #${attempt} failed`,
+            `Token: ${symbol}`,
+            `Retry: ${Math.round(delayMs / 1000)}s`,
+            "Deploy cooldown starts only after the position is closed",
+            "Error:",
+            error.split("; ").join("\n"),
           ].join("\n"),
         );
       },
@@ -80,8 +82,12 @@ export class Bot {
       this.lifetime.registerRuntime(key, runtime.remover);
       this.schedulers.set(
         key,
-        new DeployScheduler(key, tokenQueue, store, (spec) =>
-          this.launchInternal(runtime, spec),
+        new DeployScheduler(
+          key,
+          tokenQueue,
+          store,
+          (spec) => this.launchInternal(runtime, spec),
+          env.deployCooldownMs,
         ),
       );
     }
@@ -199,16 +205,18 @@ export class Bot {
       }
       const updated = await this.lifetime.forceExit(key, deployment.symbol);
       const config = CHAINS[key];
-      const txs = (updated.exitTxHashes ?? [])
-        .map((hash) => explorerLink(config, "tx", hash))
-        .join(" · ");
+      const txs = (updated.exitTxHashes ?? []).map(
+        (hash, index) =>
+          `Tx ${index + 1}: ${explorerLink(config, "tx", hash, hash)}`,
+      );
       return [
-        `✅ ${escapeHtml(deployment.symbol)} on ${key}: sold ${percent}% and closed the pool`,
-        soldFirst ? "Wallet tokens were swapped, then LP was removed." : "Wallet had no tokens; LP was removed.",
-        txs,
-      ]
-        .filter(Boolean)
-        .join("\n");
+        `✅ ${escapeHtml(deployment.symbol)} sold ${percent}% and the pool was closed`,
+        `Chain: ${key}`,
+        soldFirst
+          ? "Wallet tokens were swapped, then LP was removed"
+          : "Wallet had no tokens; LP was removed",
+        ...txs,
+      ].join("\n");
     }
     const hash = await runtime.trader.sellPercent(deployment, percent).catch((error: unknown) => {
       if (this.noTokenBalance(error)) {
@@ -219,7 +227,11 @@ export class Bot {
       throw error;
     });
     const config = CHAINS[key];
-    return `✅ Sold ${percent}% of ${escapeHtml(deployment.symbol)} on ${key}\n${explorerLink(config, "tx", hash, "tx")}`;
+    return [
+      `✅ Sold ${percent}% of ${escapeHtml(deployment.symbol)}`,
+      `Chain: ${key}`,
+      `Tx: ${explorerLink(config, "tx", hash, hash)}`,
+    ].join("\n");
   }
 
   async buyTokensInNative(amount: string, chain?: string): Promise<string> {
@@ -231,7 +243,13 @@ export class Bot {
     const runtime = this.runtimes.get(key)!;
     const hash = await runtime.trader.buyNative(deployment, parseEther(amount));
     const config = CHAINS[key];
-    return `✅ Bought ${escapeHtml(deployment.symbol)} on ${key} for ${amount} ${config.nativeSymbol}\n${explorerLink(config, "tx", hash, "tx")}`;
+    return [
+      `✅ Bought ${escapeHtml(deployment.symbol)}`,
+      `Chain: ${key}`,
+      `Paid: ${amount} ${config.nativeSymbol}`,
+      `Wallet: ${this.wallet}`,
+      `Tx: ${explorerLink(config, "tx", hash, hash)}`,
+    ].join("\n");
   }
 
   async status(): Promise<string> {
@@ -269,7 +287,12 @@ export class Bot {
 
   private async startChain(runtime: ChainRuntime): Promise<void> {
     const scheduler = this.schedulers.get(runtime.key)!;
-    await reconcileStartup(runtime.key, this.store, this.tokenQueue);
+    await reconcileStartup(
+      runtime.key,
+      this.store,
+      this.tokenQueue,
+      env.deployCooldownMs,
+    );
     await this.recoverPending(runtime, scheduler);
     await this.resume(runtime);
     await this.lifetime.bootstrap(runtime.key);
@@ -389,7 +412,9 @@ export class Bot {
     const { config } = runtime;
     const nativeUsd = await runtime.oracle.usd();
     const lines = [
-      `<b>${escapeHtml(config.chain.name)}</b> · ${config.dex.name} · ${config.nativeSymbol} ${formatUsd(nativeUsd)}`,
+      `<b>${escapeHtml(config.chain.name)}</b>`,
+      `Dex: ${config.dex.name}`,
+      `${config.nativeSymbol}: ${formatUsd(nativeUsd)}`,
     ];
     const active = this.tokenQueue.activeSymbol(runtime.key);
     if (active) lines.push(`Active: <b>${escapeHtml(active)}</b>`);
@@ -457,7 +482,8 @@ export class Bot {
       occupying && isLive(occupying) && occupying.error
         ? `Exit: retrying (${escapeHtml(occupying.error)})`
         : "Exit: ok",
-      `Queue: ${this.tokenQueue.queue(runtime.key).length} · next: ${this.tokenQueue.nextDeployable(runtime.key)?.symbol ?? "none"}`,
+      `Queue: ${this.tokenQueue.queue(runtime.key).length}`,
+      `Next: ${this.tokenQueue.nextDeployable(runtime.key)?.symbol ?? "none"}`,
       `Cooldown: ${cooldown}`,
     ].join("\n");
   }
@@ -472,13 +498,23 @@ export class Bot {
     const reserveNative = toNumber(pool.reserveNative);
     const volumeNative = toNumber(pool.boughtNative + pool.soldNative);
     return [
-      `<b>${escapeHtml(deployment.symbol)}</b> · ${escapeHtml(deployment.name)}`,
+      `<b>${escapeHtml(deployment.symbol)}</b>`,
+      `Name: ${escapeHtml(deployment.name)}`,
       this.lifetimeLine(deployment),
-      `Price: ${formatUsd(priceUsd)} · MC: ${formatUsd(priceUsd === null ? null : priceUsd * pool.supply)}`,
-      `Liquidity: ${formatUsd(toUsd(reserveNative * 2))} (${formatAmount(reserveNative)} ${config.nativeSymbol} + ${formatToken(pool.reserveToken)} ${escapeHtml(deployment.symbol)})`,
-      `Since start: buys ${pool.buys} · sells ${pool.sells} · volume ${formatAmount(volumeNative)} ${config.nativeSymbol} (${formatUsd(toUsd(volumeNative))})`,
-      `${explorerLink(config, "address", deployment.token, "Token")} · ${explorerLink(config, "address", deployment.pair, "Pair")} · ${chartLink(config, deployment.pair)}`,
-    ].join("\n");
+      `Price: ${formatUsd(priceUsd)}`,
+      `Market cap: ${formatUsd(priceUsd === null ? null : priceUsd * pool.supply)}`,
+      `Liquidity: ${formatUsd(toUsd(reserveNative * 2))}`,
+      `Native in pool: ${formatAmount(reserveNative)} ${config.nativeSymbol}`,
+      `Tokens in pool: ${formatToken(pool.reserveToken)} ${escapeHtml(deployment.symbol)}`,
+      `Buys: ${pool.buys}`,
+      `Sells: ${pool.sells}`,
+      `Volume: ${formatAmount(volumeNative)} ${config.nativeSymbol} (${formatUsd(toUsd(volumeNative))})`,
+      `Token: ${explorerLink(config, "address", deployment.token, deployment.token)}`,
+      `Pair: ${explorerLink(config, "address", deployment.pair, deployment.pair)}`,
+      `Chart: ${chartLink(config, deployment.pair)}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
 
   private deploymentStatus(deployment: Deployment): string {
@@ -486,12 +522,20 @@ export class Bot {
     const detail = deployment.error ? `: ${escapeHtml(deployment.error)}` : "";
     if (deployment.status === "withdrawn") {
       const tx = deployment.withdrawTxHash
-        ? explorerLink(config, "tx", deployment.withdrawTxHash, "exit tx")
+        ? `\nTx: ${explorerLink(config, "tx", deployment.withdrawTxHash, deployment.withdrawTxHash)}`
         : "";
-      return `<b>${escapeHtml(deployment.symbol)}</b>: exited${tx ? ` · ${tx}` : ""}`;
+      return `<b>${escapeHtml(deployment.symbol)}</b>\nStatus: exited${tx}`;
     }
     const timer = this.lifetimeLine(deployment);
-    return `<b>${escapeHtml(deployment.symbol)}</b>: ${deployment.status}${detail}${timer ? `\n${timer}` : ""} · ${explorerLink(config, "tx", deployment.txHash, "tx")} · ${formatEther(BigInt(deployment.poolNative))} ${config.nativeSymbol}`;
+    return [
+      `<b>${escapeHtml(deployment.symbol)}</b>`,
+      `Status: ${deployment.status}${detail}`,
+      timer,
+      `Tx: ${explorerLink(config, "tx", deployment.txHash, deployment.txHash)}`,
+      `Pool: ${formatEther(BigInt(deployment.poolNative))} ${config.nativeSymbol}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
 
   private lifetimeLine(deployment: Deployment): string {

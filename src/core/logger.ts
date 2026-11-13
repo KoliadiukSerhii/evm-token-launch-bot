@@ -13,6 +13,27 @@ function serialize(data: unknown): string {
   );
 }
 
+function formatAlertValue(value: unknown): string {
+  if (typeof value === "bigint") return value.toString();
+  if (Array.isArray(value)) return value.map((item) => formatAlertValue(item)).join(", ");
+  if (value !== null && typeof value === "object") return formatAlertData(value);
+  return String(value);
+}
+
+function formatAlertData(data: unknown, indent = ""): string {
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    return formatAlertValue(data);
+  }
+  return Object.entries(data)
+    .map(([key, value]) => {
+      if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+        return `${indent}${key}:\n${formatAlertData(value, `${indent}  `)}`;
+      }
+      return `${indent}${key}: ${formatAlertValue(value)}`;
+    })
+    .join("\n");
+}
+
 class Logger {
   private stream: WriteStream | null = null;
   private streamDay = "";
@@ -45,14 +66,14 @@ class Logger {
   alert(message: string, data?: unknown): void {
     this.write("info", message, data);
     this.alertSink?.(
-      data === undefined ? message : `${message}\n${serialize(data)}`,
+      data === undefined ? message : `${message}\n${formatAlertData(data)}`,
     );
   }
 
   alertError(message: string, error: unknown): void {
     const detail = describeError(error);
     this.write("error", message, { error: detail });
-    this.alertSink?.(`❌ ${message}\n${detail}`);
+    this.alertSink?.(`❌ ${message}\n${detail.split("; ").join("\n")}`);
   }
 
   close(): Promise<void> {

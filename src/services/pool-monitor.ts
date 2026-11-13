@@ -21,8 +21,19 @@ interface Backfill {
 }
 
 const MIN_STALL_MS = 30_000;
-const MAX_RETRY_MS = 30_000;
 const HISTORICAL_LAG_MS = 60_000;
+/** HTTP fallback only. A websocket subscription ignores this. */
+const MONITOR_POLL_MS = 30_000;
+/** 5s, 15s, 30s, then every 60s. New blocks do not punch through this wait. */
+const MONITOR_RETRY_STEPS_MS = [5_000, 15_000, 30_000, 60_000];
+
+export function monitorRetryDelayMs(attempt: number): number {
+  const index = Math.min(
+    Math.max(attempt, 1),
+    MONITOR_RETRY_STEPS_MS.length,
+  ) - 1;
+  return MONITOR_RETRY_STEPS_MS[index]!;
+}
 
 export class PoolMonitor {
   private readonly pools = new Map<string, Pool>();
@@ -32,6 +43,8 @@ export class PoolMonitor {
   private range: bigint;
   private draining = false;
   private failures = 0;
+  /** Ignore new heads until this time. Stops a failed read from retrying every block. */
+  private retryAfter = 0;
   private lastHeadAt = 0;
   private unwatch: (() => void) | null = null;
   private watchdog: NodeJS.Timeout | null = null;
@@ -97,6 +110,7 @@ export class PoolMonitor {
     }
     this.watchdog = null;
     this.retryTimer = null;
+    this.retryAfter = 0;
   }
 
   private subscribe(): void {
@@ -104,6 +118,7 @@ export class PoolMonitor {
     this.lastHeadAt = Date.now();
     this.unwatch = this.evm.client.watchBlockNumber({
       emitOnBegin: true,
+      pollingInterval: MONITOR_POLL_MS,
       onBlockNumber: (block) => this.onHead(block),
       onError: (error) =>
         log.warn(`[${this.chain}] block subscription error`, {
@@ -111,7 +126,11 @@ export class PoolMonitor {
         }),
     });
 
-    const stallMs = Math.max(MIN_STALL_MS, this.evm.config.blockTimeMs * 10);
+    const stallMs = Math.max(
+      MONITOR_POLL_MS * 3,
+      MIN_STALL_MS,
+      this.evm.config.blockTimeMs * 10,
+    );
     this.watchdog ??= setInterval(() => {
       if (Date.now() - this.lastHeadAt < stallMs) return;
       log.warn(
@@ -130,6 +149,7 @@ export class PoolMonitor {
   private onHead(block: bigint): void {
     this.lastHeadAt = Date.now();
     if (block > this.head) this.head = block;
+    if (Date.now() < this.retryAfter) return;
     void this.drain();
   }
 
@@ -162,17 +182,25 @@ export class PoolMonitor {
       }
     } catch (error) {
       this.failures++;
+      const delay = monitorRetryDelayMs(this.failures);
+      this.retryAfter = Date.now() + delay;
       if (this.failures === 1) {
-        log.alertError(`[${this.chain}] monitor failed, retrying`, error);
+        log.alertError(
+          `[${this.chain}] monitor failed, retrying in ${delay / 1000}s`,
+          error,
+        );
       } else {
         log.warn(`[${this.chain}] monitor retry ${this.failures} failed`, {
           error: describeError(error),
+          retryInSec: delay / 1000,
         });
       }
-      this.retryTimer = setTimeout(
-        () => void this.drain(),
-        Math.min(1_000 * 2 ** this.failures, MAX_RETRY_MS),
-      );
+      if (this.retryTimer) clearTimeout(this.retryTimer);
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null;
+        this.retryAfter = 0;
+        void this.drain();
+      }, delay);
     } finally {
       this.draining = false;
     }
@@ -199,7 +227,14 @@ export class PoolMonitor {
         this.range = grown < max ? grown : max;
         return { logs, to };
       } catch (error) {
-        if (this.range === 1n) throw error;
+        const message = describeError(error).toLowerCase();
+        const transport =
+          message.includes("rpc request failed") ||
+          message.includes("limit") ||
+          message.includes("429") ||
+          message.includes("timeout") ||
+          message.includes("fetch failed");
+        if (transport || this.range === 1n) throw error;
         this.range /= 2n;
       }
     }

@@ -7,12 +7,12 @@ import {
 import { type Deployment, isLive } from "../domain/types.js";
 import type { StateStore } from "../storage/state-store.js";
 import type { TokenQueueStore } from "../storage/token-queue-store.js";
-import { POST_EXIT_DEPLOY_DELAY_MS } from "./deploy-scheduler.js";
 
 export async function reconcileStartup(
   chain: ChainKey,
   store: StateStore,
   queue: TokenQueueStore,
+  cooldownMs: number,
 ): Promise<void> {
   const deployments = store.deployments(chain);
   const conflict = assertSingleOccupant(deployments, chain);
@@ -51,7 +51,7 @@ export async function reconcileStartup(
   if (!lastWithdrawn?.withdrawnAt) return;
 
   const cooldownEnds =
-    Date.parse(lastWithdrawn.withdrawnAt) + POST_EXIT_DEPLOY_DELAY_MS;
+    Date.parse(lastWithdrawn.withdrawnAt) + cooldownMs;
   if (Date.now() < cooldownEnds) {
     await queue.setNextDeployAt(chain, new Date(cooldownEnds).toISOString());
     log.info(`[${chain}] restored post-exit deploy cooldown`, {

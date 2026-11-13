@@ -71,19 +71,19 @@ const DURATION_UNITS: Record<string, number> = {
   d: 86_400_000,
 };
 
-function parsePoolLifetimeMs(): number {
-  const raw = process.env["POOL_LIFETIME"]?.trim() ?? "24h";
+function parseDurationMs(name: string, fallback: string): number {
+  const raw = process.env[name]?.trim() || fallback;
   const match = /^(\d+)([smhd])?$/i.exec(raw);
   if (!match) {
     throw new Error(
-      `POOL_LIFETIME must look like "24h", "3d", or "3600s", got "${raw}"`,
+      `${name} must look like "24h", "3d", or "3600s", got "${raw}"`,
     );
   }
   const amount = Number(match[1]);
   const unit = (match[2] ?? "h").toLowerCase();
   const ms = amount * DURATION_UNITS[unit]!;
   if (!Number.isFinite(ms) || ms <= 0) {
-    throw new Error(`POOL_LIFETIME must be positive, got "${raw}"`);
+    throw new Error(`${name} must be positive, got "${raw}"`);
   }
   return ms;
 }
@@ -94,7 +94,9 @@ export const env = {
   chains,
   tokens: parseTokens(),
   poolUsd: parsePoolUsd(),
-  poolLifetimeMs: parsePoolLifetimeMs(),
+  poolLifetimeMs: parseDurationMs("POOL_LIFETIME", "24h"),
+  /** Pause after a full exit before the next token on that chain. */
+  deployCooldownMs: parseDurationMs("DEPLOY_COOLDOWN", "1h"),
   privateKey: parsePrivateKey(),
   rpcUrls: Object.fromEntries(
     chains.map((key) => [key, requiredList(rpcEnvName(key))]),

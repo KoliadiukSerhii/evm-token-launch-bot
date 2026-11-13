@@ -12,6 +12,7 @@ import {
   routerReadAbi,
 } from "../abi/index.js";
 import { describeError } from "../core/errors.js";
+import { formatToken } from "../core/format.js";
 import { log } from "../core/logger.js";
 import type { SerialQueue } from "../core/serial.js";
 import type { Deployment, LiveDeployment } from "../domain/types.js";
@@ -165,11 +166,7 @@ export class LiquidityRemover {
       const soldAfter = await this.sellAmount(deployment, balance);
       if (soldAfter) exitTxHashes.push(soldAfter);
       const leftover = await this.tokenBalance(deployment.token);
-      if (leftover > 0n) {
-        log.alert(
-          `[${config.key}] ${deployment.symbol} exit finished with ${leftover} tokens left (no pool liquidity to swap into)`,
-        );
-      }
+      if (leftover > 0n) this.alertLeftover(deployment.symbol, leftover);
       return this.markWithdrawn(deployment, exitTxHashes);
     }
 
@@ -281,12 +278,18 @@ export class LiquidityRemover {
     if (soldAfter) exitTxHashes.push(soldAfter);
     const leftover = await this.tokenBalance(deployment.token);
     const stuck = leftover > kept ? leftover - kept : 0n;
-    if (stuck > 0n) {
-      log.alert(
-        `[${config.key}] ${deployment.symbol} exit finished with ${stuck} tokens left (no pool liquidity to swap into)`,
-      );
-    }
+    if (stuck > 0n) this.alertLeftover(deployment.symbol, stuck);
     return this.markWithdrawn(deployment, exitTxHashes, lpBalance);
+  }
+
+  private alertLeftover(symbol: string, amount: bigint): void {
+    log.alert(
+      [
+        `[${this.evm.config.key}] ${symbol} exit finished`,
+        `Tokens left: ${formatToken(amount)} ${symbol}`,
+        "Reason: no pool liquidity to swap into",
+      ].join("\n"),
+    );
   }
 
   private async markWithdrawn(

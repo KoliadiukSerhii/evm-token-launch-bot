@@ -1,7 +1,7 @@
 import { Bot } from "../bot/bot.js";
 import { Reporter } from "../bot/reporter.js";
 import { env } from "../config/env.js";
-import { escapeHtml } from "../core/format.js";
+import { escapeHtml, formatDurationMs } from "../core/format.js";
 import { log } from "../core/logger.js";
 import { StateStore } from "../storage/state-store.js";
 import { TokenQueueStore } from "../storage/token-queue-store.js";
@@ -43,22 +43,27 @@ async function main(): Promise<void> {
     void shutdown("unhandled rejection", 1);
   });
 
-  log.alert("token-launch-bot starting", {
-    wallet: bot.wallet,
-    chains: env.chains,
-    tokens: env.tokens.map(
-      (t) => `${t.name} (${t.symbol}), supply ${t.supply}`,
-    ),
-    poolUsd: env.poolUsd,
-    poolLifetimeMs: env.poolLifetimeMs,
-    withdrawRpc: Object.fromEntries(
-      env.chains.map((key) => [
-        key,
-        (env.withdrawRpcUrls[key]?.length ?? 0) > 0,
-      ]),
-    ),
-    telegram: telegram.enabled,
-  });
+  const withdrawRpc = env.chains
+    .map(
+      (key) =>
+        `${key} ${(env.withdrawRpcUrls[key]?.length ?? 0) > 0 ? "on" : "off"}`,
+    )
+    .join(", ");
+  log.alert(
+    [
+      "token-launch-bot starting",
+      `Wallet: ${bot.wallet}`,
+      `Chains: ${env.chains.join(", ")}`,
+      `Tokens: ${env.tokens
+        .map((token) => `${token.name} (${token.symbol}), supply ${token.supply}`)
+        .join(", ")}`,
+      `Pool: $${env.poolUsd}`,
+      `Pool lifetime: ${formatDurationMs(env.poolLifetimeMs)}`,
+      `Deploy cooldown: ${formatDurationMs(env.deployCooldownMs)}`,
+      `Withdraw RPC: ${withdrawRpc}`,
+      `Telegram: ${telegram.enabled ? "on" : "off"}`,
+    ].join("\n"),
+  );
 
   await telegram.start();
   await bot.start();
